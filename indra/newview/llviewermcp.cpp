@@ -832,26 +832,37 @@ namespace
         out["item_id"] = item->getUUID().asString();
     }
 
+    void derez_object(LLViewerObject* object, bool copy);
+
     void tool_take(const boost::json::object* args, boost::json::object& out, bool& is_error)
     {
         require_world(is_error, "take");
         LLViewerObject* obj = object_by_id(jstr(args, "id"), is_error);
-        if (!obj->permYouOwner())
+        const bool copy = jbool(args, "copy", false);
+        LLViewerObject* root = obj->getRootEdit() ? obj->getRootEdit() : obj;
+        if (!root->permYouOwner())
         {
             is_error = true;
             throw std::runtime_error("you do not own this object");
         }
-        LLSelectMgr::getInstance()->deselectAll();
-        LLSelectMgr::getInstance()->selectObjectAndFamily(obj->getRootEdit() ? obj->getRootEdit() : obj);
-        if (jbool(args, "copy", false))
+        if (copy && !root->permCopy())
         {
-            handle_take_copy();
+            is_error = true;
+            throw std::runtime_error("you cannot copy this object");
         }
-        else
+        if (!root->getRegion() || root->getLocalID() == 0)
         {
-            handle_take(false);
+            is_error = true;
+            throw std::runtime_error("object is not ready to take");
         }
+        if (gInventory.findCategoryUUIDForType(LLFolderType::FT_OBJECT).isNull())
+        {
+            is_error = true;
+            throw std::runtime_error("objects inventory folder was not found");
+        }
+        derez_object(root, copy);
         out["sent"] = true;
+        out["id"] = root->getID().asString();
     }
 
     LLViewerJointAttachment* attachment_point(const std::string& name)
@@ -948,6 +959,104 @@ namespace
             value /= 255.f;
         }
         return llclamp(value, 0.f, 1.f);
+    }
+
+    void send_transform_update(LLViewerObject* object, U8 type)
+    {
+        if (!object || !object->getRegion() || object->getLocalID() == 0 || type == UPD_NONE)
+        {
+            return;
+        }
+        if (object->isRootEdit())
+        {
+            type |= UPD_LINKED_SETS;
+        }
+        U8 data[64];
+        S32 offset = 0;
+        if (type & UPD_POSITION)
+        {
+            htolememcpy(&data[offset], &(object->getPosition().mV), MVT_LLVector3, 12);
+            offset += 12;
+        }
+        if (type & UPD_ROTATION)
+        {
+            LLVector3 packed = object->getRotation().packToVector3();
+            htolememcpy(&data[offset], &(packed.mV), MVT_LLQuaternion, 12);
+            offset += 12;
+        }
+        if (type & UPD_SCALE)
+        {
+            htolememcpy(&data[offset], &(object->getScale().mV), MVT_LLVector3, 12);
+            offset += 12;
+        }
+        gMessageSystem->newMessage("MultipleObjectUpdate");
+        gMessageSystem->nextBlockFast(_PREHASH_AgentData);
+        gMessageSystem->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+        gMessageSystem->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+        gMessageSystem->nextBlockFast(_PREHASH_ObjectData);
+        gMessageSystem->addU32Fast(_PREHASH_ObjectLocalID, object->getLocalID());
+        gMessageSystem->addU8Fast(_PREHASH_Type, type);
+        gMessageSystem->addBinaryDataFast(_PREHASH_Data, data, offset);
+        gMessageSystem->sendReliable(object->getRegion()->getHost());
+    }
+
+    void send_name(LLViewerObject* object, const std::string& name)
+    {
+        if (name.empty() || !object->getRegion())
+        {
+            return;
+        }
+        gMessageSystem->newMessage("ObjectName");
+        gMessageSystem->nextBlockFast(_PREHASH_AgentData);
+        gMessageSystem->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+        gMessageSystem->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+        gMessageSystem->nextBlockFast(_PREHASH_ObjectData);
+        gMessageSystem->addU32Fast(_PREHASH_LocalID, object->getLocalID());
+        gMessageSystem->addStringFast(_PREHASH_Name, name);
+        gMessageSystem->sendReliable(object->getRegion()->getHost());
+    }
+
+    void send_description(LLViewerObject* object, const std::string& description)
+    {
+        if (!object->getRegion())
+        {
+            return;
+        }
+        gMessageSystem->newMessage("ObjectDescription");
+        gMessageSystem->nextBlockFast(_PREHASH_AgentData);
+        gMessageSystem->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+        gMessageSystem->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+        gMessageSystem->nextBlockFast(_PREHASH_ObjectData);
+        gMessageSystem->addU32Fast(_PREHASH_LocalID, object->getLocalID());
+        gMessageSystem->addStringFast(_PREHASH_Description, description);
+        gMessageSystem->sendReliable(object->getRegion()->getHost());
+    }
+
+    void derez_object(LLViewerObject* object, bool copy)
+    {
+        LLViewerObject* root = object->getRootEdit() ? object->getRootEdit() : object;
+        LLViewerRegion* region = root->getRegion();
+        const LLUUID folder_id = gInventory.findCategoryUUIDForType(LLFolderType::FT_OBJECT);
+        LLUUID transaction_id;
+        transaction_id.generate();
+        gMessageSystem->newMessageFast(_PREHASH_DeRezObject);
+        gMessageSystem->nextBlockFast(_PREHASH_AgentData);
+        gMessageSystem->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+        gMessageSystem->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+        gMessageSystem->nextBlockFast(_PREHASH_AgentBlock);
+        gMessageSystem->addUUIDFast(_PREHASH_GroupID, gAgent.getGroupID());
+        gMessageSystem->addU8Fast(_PREHASH_Destination, copy ? (U8)DRD_ACQUIRE_TO_AGENT_INVENTORY : (U8)DRD_TAKE_INTO_AGENT_INVENTORY);
+        gMessageSystem->addUUIDFast(_PREHASH_DestinationID, folder_id);
+        gMessageSystem->addUUIDFast(_PREHASH_TransactionID, transaction_id);
+        gMessageSystem->addU8Fast(_PREHASH_PacketCount, (U8)1);
+        gMessageSystem->addU8Fast(_PREHASH_PacketNumber, (U8)0);
+        gMessageSystem->nextBlockFast(_PREHASH_ObjectData);
+        gMessageSystem->addU32Fast(_PREHASH_ObjectLocalID, root->getLocalID());
+        gMessageSystem->sendReliable(region->getHost());
+        if (gViewerWindow && gViewerWindow->getWindow())
+        {
+            gViewerWindow->getWindow()->incBusyCount();
+        }
     }
 
     void apply_shape(LLViewerObject* obj, const boost::json::object* args)
@@ -1086,15 +1195,17 @@ namespace
         }
         if (updates)
         {
-            LLSelectMgr::getInstance()->sendMultipleUpdate(updates);
+            // Selection updates skip individually selected prims, so the
+            // simulator never saw the new position or scale.
+            send_transform_update(obj, updates);
         }
         if (jhas(args, "name"))
         {
-            LLSelectMgr::getInstance()->selectionSetObjectName(jstr(args, "name"));
+            send_name(obj, jstr(args, "name"));
         }
         if (jhas(args, "description"))
         {
-            LLSelectMgr::getInstance()->selectionSetObjectDescription(jstr(args, "description"));
+            send_description(obj, jstr(args, "description"));
         }
         if (jhas(args, "material"))
         {
@@ -1102,17 +1213,18 @@ namespace
             obj->setMaterial((obj->getMaterial() & ~LL_MCODE_MASK) | material);
             obj->sendMaterialUpdate();
         }
-        if (jbool(args, "physics", false) || jhas(args, "physics"))
+        LLViewerObject* root = obj->getRootEdit() ? obj->getRootEdit() : obj;
+        if (jhas(args, "physics"))
         {
-            LLSelectMgr::getInstance()->selectionUpdatePhysics(jbool(args, "physics", false));
+            root->setFlags(FLAGS_USE_PHYSICS, jbool(args, "physics", false));
         }
         if (jhas(args, "phantom"))
         {
-            LLSelectMgr::getInstance()->selectionUpdatePhantom(jbool(args, "phantom", false));
+            root->setFlags(FLAGS_PHANTOM, jbool(args, "phantom", false));
         }
         if (jhas(args, "temporary"))
         {
-            LLSelectMgr::getInstance()->selectionUpdateTemporary(jbool(args, "temporary", false));
+            root->setFlags(FLAGS_TEMPORARY_ON_REZ, jbool(args, "temporary", false));
         }
         apply_shape(obj, args);
 
@@ -1134,85 +1246,52 @@ namespace
         {
             color.mV[VALPHA] = 1.f - llclamp((F32)jreal(args, "transparency", 0.0), 0.f, 1.f);
         }
-        if (rgb || jhas(args, "alpha") || jhas(args, "transparency"))
-        {
-            if (one_face)
-            {
-                obj->setTEColor(face, color);
-            }
-            else if (rgb && (jhas(args, "alpha") || jhas(args, "transparency")))
-            {
-                LLSelectMgr::getInstance()->selectionSetColor(color);
-            }
-            else if (rgb)
-            {
-                LLSelectMgr::getInstance()->selectionSetColorOnly(color);
-            }
-            else
-            {
-                LLSelectMgr::getInstance()->selectionSetAlphaOnly(color.mV[VALPHA]);
-            }
-        }
-        if (jhas(args, "glow"))
-        {
-            const F32 glow = llclamp((F32)jreal(args, "glow", 0.0), 0.f, 1.f);
-            if (one_face)
-            {
-                obj->setTEGlow(face, glow);
-            }
-            else
-            {
-                LLSelectMgr::getInstance()->selectionSetGlow(glow);
-            }
-        }
-        if (jhas(args, "fullbright"))
-        {
-            const U8 bright = jbool(args, "fullbright", false) ? 1 : 0;
-            if (one_face && obj->getTE(face))
-            {
-                obj->getTE(face)->setFullbright(bright);
-            }
-            else
-            {
-                LLSelectMgr::getInstance()->selectionSetFullbright(bright);
-            }
-        }
-        if (jhas(args, "shiny"))
-        {
-            const std::string shiny = jstr(args, "shiny", "none");
-            U8 code = 0;
-            if (shiny == "low") code = 1;
-            else if (shiny == "medium") code = 2;
-            else if (shiny == "high") code = 3;
-            if (one_face && obj->getTE(face))
-            {
-                obj->getTE(face)->setShiny(code);
-            }
-            else
-            {
-                LLSelectMgr::getInstance()->selectionSetShiny(code, LLUUID::null);
-            }
-        }
-        if (jhas(args, "texture"))
+        const bool surface = rgb || jhas(args, "alpha") || jhas(args, "transparency") || jhas(args, "glow")
+            || jhas(args, "fullbright") || jhas(args, "shiny") || jhas(args, "texture");
+        if (surface)
         {
             const LLUUID texture(jstr(args, "texture"));
-            if (texture.isNull())
+            if (jhas(args, "texture") && texture.isNull())
             {
                 is_error = true;
                 throw std::runtime_error("texture must be a UUID");
             }
-            if (one_face)
+            const F32 glow = llclamp((F32)jreal(args, "glow", 0.0), 0.f, 1.f);
+            const U8 bright = jbool(args, "fullbright", false) ? 1 : 0;
+            const std::string shiny = jstr(args, "shiny", "none");
+            U8 shiny_code = 0;
+            if (shiny == "low") shiny_code = 1;
+            else if (shiny == "medium") shiny_code = 2;
+            else if (shiny == "high") shiny_code = 3;
+            const S32 first = one_face ? face : 0;
+            const S32 last = one_face ? face : obj->getNumTEs() - 1;
+            for (S32 te = first; te <= last; ++te)
             {
-                obj->setTETexture(face, texture);
+                if (!obj->getTE(te))
+                {
+                    continue;
+                }
+                if (rgb || jhas(args, "alpha") || jhas(args, "transparency"))
+                {
+                    obj->setTEColor(te, color);
+                }
+                if (jhas(args, "glow"))
+                {
+                    obj->setTEGlow(te, glow);
+                }
+                if (jhas(args, "fullbright"))
+                {
+                    obj->getTE(te)->setFullbright(bright);
+                }
+                if (jhas(args, "shiny"))
+                {
+                    obj->getTE(te)->setShiny(shiny_code);
+                }
+                if (jhas(args, "texture"))
+                {
+                    obj->setTETexture(te, texture);
+                }
             }
-            else
-            {
-                LLSelectMgr::getInstance()->selectionSetImage(texture);
-            }
-        }
-        if (one_face && (rgb || jhas(args, "alpha") || jhas(args, "transparency") || jhas(args, "glow")
-            || jhas(args, "fullbright") || jhas(args, "shiny") || jhas(args, "texture")))
-        {
             obj->sendTEUpdate();
         }
         out["sent"] = true;
