@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llimview.h"
+#include "llviewermcp.h"
 
 #include "llavatarnamecache.h"  // IDEVO
 #include "llavataractions.h"
@@ -3157,6 +3158,7 @@ void LLIMMgr::addMessage(
     LLUUID display_id,
     std::string_view display_name)
 {
+    LLViewerMCP::noteChat("im", from, target_id, msg);
     LLUUID other_participant_id = target_id;
     std::string message_display_name = (display_name.empty()) ? from : std::string(display_name);
     if (display_id.isNull() && (display_name.empty()))

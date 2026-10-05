@@ -59,6 +59,7 @@
 #include "llmimetypes.h"
 #include "llslurl.h"
 #include "llstartup.h"
+#include "llviewermcp.h"
 #include "llfocusmgr.h"
 #include "llurlfloaterdispatchhandler.h"
 #include "llviewerjoystick.h"
@@ -1757,6 +1758,7 @@ void LLAppViewer::flushLFSIO()
 
 bool LLAppViewer::cleanup()
 {
+    LLViewerMCP::shutdown();
 #if LL_VELOPACK
     // Apply any pending Velopack update before shutdown
     if (velopack_is_update_pending())
@@ -5274,6 +5276,7 @@ void LLAppViewer::idle()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     pingMainloopTimeout("Main:Idle");
+    LLViewerMCP::pump();
 
     // Update frame timers
     static LLTimer idle_timer;
