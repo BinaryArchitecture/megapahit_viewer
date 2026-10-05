@@ -59,6 +59,7 @@
 #include "llmimetypes.h"
 #include "llslurl.h"
 #include "llstartup.h"
+#include "llviewermcp.h"
 #include "llfocusmgr.h"
 #include "llurlfloaterdispatchhandler.h"
 #include "llviewerjoystick.h"
@@ -1360,6 +1361,14 @@ bool LLAppViewer::frame()
 
 bool LLAppViewer::doFrame()
 {
+    // SIGTERM asks for a normal logout. Quitting immediately skips
+    // LogoutRequest and leaves the agent in the region.
+    if (LLApp::consumeSignalQuit() && !mQuitRequested && !isQuitting())
+    {
+        LL_INFOS() << "Terminate signal, logging out before exit" << LL_ENDL;
+        requestQuit();
+    }
+
     resumeMainloopTimeout("Main:doFrameStart");
 
     U32 fpsLimitMaxFps = (U32)gSavedSettings.getU32("MaxFPS");
@@ -1757,6 +1766,7 @@ void LLAppViewer::flushLFSIO()
 
 bool LLAppViewer::cleanup()
 {
+    LLViewerMCP::shutdown();
 #if LL_VELOPACK
     // Apply any pending Velopack update before shutdown
     if (velopack_is_update_pending())
@@ -5274,6 +5284,7 @@ void LLAppViewer::idle()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     pingMainloopTimeout("Main:Idle");
+    LLViewerMCP::pump();
 
     // Update frame timers
     static LLTimer idle_timer;

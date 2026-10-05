@@ -704,6 +704,7 @@ set(viewer_SOURCE_FILES
     llviewermedia_streamingaudio.cpp
     llviewermediafocus.cpp
     llviewermenu.cpp
+    llviewermcp.cpp
     llviewermenufile.cpp
     llviewermessage.cpp
     llviewernetwork.cpp
