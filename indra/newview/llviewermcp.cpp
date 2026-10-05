@@ -922,10 +922,130 @@ namespace
         out["item_id"] = item_id.asString();
     }
 
+    U8 material_code(const std::string& name, bool& is_error)
+    {
+        if (name == "stone") return LL_MCODE_STONE;
+        if (name == "metal") return LL_MCODE_METAL;
+        if (name == "glass") return LL_MCODE_GLASS;
+        if (name == "wood") return LL_MCODE_WOOD;
+        if (name == "flesh") return LL_MCODE_FLESH;
+        if (name == "plastic") return LL_MCODE_PLASTIC;
+        if (name == "rubber") return LL_MCODE_RUBBER;
+        if (name == "light") return LL_MCODE_LIGHT;
+        is_error = true;
+        throw std::runtime_error("material must be stone, metal, glass, wood, flesh, plastic, rubber, or light");
+    }
+
+    F32 unit_or_byte(const boost::json::object* args, const char* key, F32 current)
+    {
+        if (!jhas(args, key))
+        {
+            return current;
+        }
+        F32 value = (F32)jreal(args, key, current);
+        if (value > 1.f)
+        {
+            value /= 255.f;
+        }
+        return llclamp(value, 0.f, 1.f);
+    }
+
+    void apply_shape(LLViewerObject* obj, const boost::json::object* args)
+    {
+        if (!obj->getVolume())
+        {
+            return;
+        }
+        const bool shape = jhas(args, "hollow") || jhas(args, "twist") || jhas(args, "twist_begin")
+            || jhas(args, "taper_x") || jhas(args, "taper_y") || jhas(args, "shear_x") || jhas(args, "shear_y")
+            || jhas(args, "cut_begin") || jhas(args, "cut_end") || jhas(args, "path_begin") || jhas(args, "path_end")
+            || jhas(args, "hole") || jhas(args, "skew") || jhas(args, "revolutions");
+        if (!shape)
+        {
+            return;
+        }
+        LLVolumeParams params = obj->getVolume()->getParams();
+        if (jhas(args, "hollow"))
+        {
+            F32 hollow = (F32)jreal(args, "hollow", 0.0);
+            if (hollow > 1.f)
+            {
+                hollow /= 100.f;
+            }
+            params.setHollow(llclamp(hollow, 0.f, 0.95f));
+        }
+        if (jhas(args, "twist") || jhas(args, "twist_begin"))
+        {
+            const U8 path = params.getPathParams().getCurveType();
+            const F32 limit = (path == LL_PCODE_PATH_LINE || path == LL_PCODE_PATH_FLEXIBLE)
+                ? OBJECT_TWIST_LINEAR_MAX : OBJECT_TWIST_MAX;
+            F32 begin = params.getPathParams().getTwistBegin() * limit;
+            F32 end = params.getPathParams().getTwistEnd() * limit;
+            if (jhas(args, "twist_begin"))
+            {
+                begin = (F32)jreal(args, "twist_begin", begin);
+            }
+            if (jhas(args, "twist"))
+            {
+                end = (F32)jreal(args, "twist", end);
+            }
+            params.setTwistBegin(begin / limit);
+            params.setTwist(end / limit);
+        }
+        if (jhas(args, "taper_x") || jhas(args, "taper_y"))
+        {
+            params.setTaper(
+                llclamp((F32)jreal(args, "taper_x", params.getPathParams().getTaperX()), -1.f, 1.f),
+                llclamp((F32)jreal(args, "taper_y", params.getPathParams().getTaperY()), -1.f, 1.f));
+        }
+        if (jhas(args, "shear_x") || jhas(args, "shear_y"))
+        {
+            params.setShear(
+                (F32)jreal(args, "shear_x", params.getPathParams().getShearX()),
+                (F32)jreal(args, "shear_y", params.getPathParams().getShearY()));
+        }
+        if (jhas(args, "cut_begin") || jhas(args, "cut_end"))
+        {
+            F32 begin = jhas(args, "cut_begin") ? (F32)jreal(args, "cut_begin", 0.0) : params.getProfileParams().getBegin();
+            F32 end = jhas(args, "cut_end") ? (F32)jreal(args, "cut_end", 1.0) : params.getProfileParams().getEnd();
+            params.setBeginAndEndS(llclamp(begin, 0.f, 1.f), llclamp(end, 0.f, 1.f));
+        }
+        if (jhas(args, "path_begin") || jhas(args, "path_end"))
+        {
+            F32 begin = jhas(args, "path_begin") ? (F32)jreal(args, "path_begin", 0.0) : params.getPathParams().getBegin();
+            F32 end = jhas(args, "path_end") ? (F32)jreal(args, "path_end", 1.0) : params.getPathParams().getEnd();
+            params.setBeginAndEndT(llclamp(begin, 0.f, 1.f), llclamp(end, 0.f, 1.f));
+        }
+        if (jhas(args, "skew"))
+        {
+            params.setSkew((F32)jreal(args, "skew", 0.0));
+        }
+        if (jhas(args, "revolutions"))
+        {
+            params.setRevolutions((F32)jreal(args, "revolutions", 1.0));
+        }
+        if (jhas(args, "hole"))
+        {
+            const std::string hole = jstr(args, "hole", "same");
+            U8 hole_code = LL_PCODE_HOLE_SAME;
+            if (hole == "circle") hole_code = LL_PCODE_HOLE_CIRCLE;
+            else if (hole == "square") hole_code = LL_PCODE_HOLE_SQUARE;
+            else if (hole == "triangle") hole_code = LL_PCODE_HOLE_TRIANGLE;
+            const U8 profile = params.getProfileParams().getCurveType() & ~LL_PCODE_HOLE_MASK;
+            params.setType(profile | hole_code, params.getPathParams().getCurveType());
+        }
+        obj->updateVolume(params);
+    }
+
     void tool_edit(const boost::json::object* args, boost::json::object& out, bool& is_error)
     {
         require_world(is_error, "edit");
         LLViewerObject* obj = object_by_id(jstr(args, "id"), is_error);
+        if (!obj->permModify())
+        {
+            is_error = true;
+            throw std::runtime_error("you cannot modify this object");
+        }
         LLSelectMgr::getInstance()->deselectAll();
         LLSelectMgr::getInstance()->selectObjectOnly(obj);
         U8 updates = 0;
@@ -975,6 +1095,125 @@ namespace
         if (jhas(args, "description"))
         {
             LLSelectMgr::getInstance()->selectionSetObjectDescription(jstr(args, "description"));
+        }
+        if (jhas(args, "material"))
+        {
+            const U8 material = material_code(jstr(args, "material"), is_error);
+            obj->setMaterial((obj->getMaterial() & ~LL_MCODE_MASK) | material);
+            obj->sendMaterialUpdate();
+        }
+        if (jbool(args, "physics", false) || jhas(args, "physics"))
+        {
+            LLSelectMgr::getInstance()->selectionUpdatePhysics(jbool(args, "physics", false));
+        }
+        if (jhas(args, "phantom"))
+        {
+            LLSelectMgr::getInstance()->selectionUpdatePhantom(jbool(args, "phantom", false));
+        }
+        if (jhas(args, "temporary"))
+        {
+            LLSelectMgr::getInstance()->selectionUpdateTemporary(jbool(args, "temporary", false));
+        }
+        apply_shape(obj, args);
+
+        const S32 face = jhas(args, "face") ? (S32)jreal(args, "face", -1.0) : -1;
+        const bool one_face = face >= 0 && face < obj->getNumTEs() && obj->getTE(face);
+        LLColor4 color = one_face ? obj->getTE(face)->getColor() : (obj->getTE(0) ? obj->getTE(0)->getColor() : LLColor4::white);
+        const bool rgb = jhas(args, "r") || jhas(args, "g") || jhas(args, "b");
+        if (rgb)
+        {
+            color.mV[VRED] = unit_or_byte(args, "r", color.mV[VRED]);
+            color.mV[VGREEN] = unit_or_byte(args, "g", color.mV[VGREEN]);
+            color.mV[VBLUE] = unit_or_byte(args, "b", color.mV[VBLUE]);
+        }
+        if (jhas(args, "alpha"))
+        {
+            color.mV[VALPHA] = llclamp((F32)jreal(args, "alpha", color.mV[VALPHA]), 0.f, 1.f);
+        }
+        if (jhas(args, "transparency"))
+        {
+            color.mV[VALPHA] = 1.f - llclamp((F32)jreal(args, "transparency", 0.0), 0.f, 1.f);
+        }
+        if (rgb || jhas(args, "alpha") || jhas(args, "transparency"))
+        {
+            if (one_face)
+            {
+                obj->setTEColor(face, color);
+            }
+            else if (rgb && (jhas(args, "alpha") || jhas(args, "transparency")))
+            {
+                LLSelectMgr::getInstance()->selectionSetColor(color);
+            }
+            else if (rgb)
+            {
+                LLSelectMgr::getInstance()->selectionSetColorOnly(color);
+            }
+            else
+            {
+                LLSelectMgr::getInstance()->selectionSetAlphaOnly(color.mV[VALPHA]);
+            }
+        }
+        if (jhas(args, "glow"))
+        {
+            const F32 glow = llclamp((F32)jreal(args, "glow", 0.0), 0.f, 1.f);
+            if (one_face)
+            {
+                obj->setTEGlow(face, glow);
+            }
+            else
+            {
+                LLSelectMgr::getInstance()->selectionSetGlow(glow);
+            }
+        }
+        if (jhas(args, "fullbright"))
+        {
+            const U8 bright = jbool(args, "fullbright", false) ? 1 : 0;
+            if (one_face && obj->getTE(face))
+            {
+                obj->getTE(face)->setFullbright(bright);
+            }
+            else
+            {
+                LLSelectMgr::getInstance()->selectionSetFullbright(bright);
+            }
+        }
+        if (jhas(args, "shiny"))
+        {
+            const std::string shiny = jstr(args, "shiny", "none");
+            U8 code = 0;
+            if (shiny == "low") code = 1;
+            else if (shiny == "medium") code = 2;
+            else if (shiny == "high") code = 3;
+            if (one_face && obj->getTE(face))
+            {
+                obj->getTE(face)->setShiny(code);
+            }
+            else
+            {
+                LLSelectMgr::getInstance()->selectionSetShiny(code, LLUUID::null);
+            }
+        }
+        if (jhas(args, "texture"))
+        {
+            const LLUUID texture(jstr(args, "texture"));
+            if (texture.isNull())
+            {
+                is_error = true;
+                throw std::runtime_error("texture must be a UUID");
+            }
+            if (one_face)
+            {
+                obj->setTETexture(face, texture);
+            }
+            else
+            {
+                LLSelectMgr::getInstance()->selectionSetImage(texture);
+            }
+        }
+        if (one_face && (rgb || jhas(args, "alpha") || jhas(args, "transparency") || jhas(args, "glow")
+            || jhas(args, "fullbright") || jhas(args, "shiny") || jhas(args, "texture")))
+        {
+            obj->sendTEUpdate();
         }
         out["sent"] = true;
         out["id"] = obj->getID().asString();
@@ -1343,8 +1582,8 @@ namespace
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"point\":{\"type\":\"string\"}}}", tool_attach},
         {"detach", "Detach a worn object by its in-world UUID.",
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}", tool_detach},
-        {"edit", "Move, scale, rotate, rename, or describe one prim. Rotation is degrees. Position is region-local.",
-            "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"x\":{\"type\":\"number\"},\"y\":{\"type\":\"number\"},\"z\":{\"type\":\"number\"},\"size\":{\"type\":\"number\"},\"scale_x\":{\"type\":\"number\"},\"scale_y\":{\"type\":\"number\"},\"scale_z\":{\"type\":\"number\"},\"rot_x\":{\"type\":\"number\"},\"rot_y\":{\"type\":\"number\"},\"rot_z\":{\"type\":\"number\"},\"name\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\"]}", tool_edit},
+        {"edit", "Change one prim: position, size, rotation, name, description, material, physics, color, texture, glow, and shape. Rotation and twist are degrees. Color channels are 0-1 or 0-255. face limits color and texture to one face.",
+            "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"x\":{\"type\":\"number\"},\"y\":{\"type\":\"number\"},\"z\":{\"type\":\"number\"},\"size\":{\"type\":\"number\"},\"scale_x\":{\"type\":\"number\"},\"scale_y\":{\"type\":\"number\"},\"scale_z\":{\"type\":\"number\"},\"rot_x\":{\"type\":\"number\"},\"rot_y\":{\"type\":\"number\"},\"rot_z\":{\"type\":\"number\"},\"name\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"},\"material\":{\"type\":\"string\"},\"physics\":{\"type\":\"boolean\"},\"phantom\":{\"type\":\"boolean\"},\"temporary\":{\"type\":\"boolean\"},\"r\":{\"type\":\"number\"},\"g\":{\"type\":\"number\"},\"b\":{\"type\":\"number\"},\"alpha\":{\"type\":\"number\"},\"transparency\":{\"type\":\"number\"},\"glow\":{\"type\":\"number\"},\"fullbright\":{\"type\":\"boolean\"},\"shiny\":{\"type\":\"string\"},\"texture\":{\"type\":\"string\"},\"face\":{\"type\":\"number\"},\"hollow\":{\"type\":\"number\"},\"twist\":{\"type\":\"number\"},\"twist_begin\":{\"type\":\"number\"},\"taper_x\":{\"type\":\"number\"},\"taper_y\":{\"type\":\"number\"},\"shear_x\":{\"type\":\"number\"},\"shear_y\":{\"type\":\"number\"},\"cut_begin\":{\"type\":\"number\"},\"cut_end\":{\"type\":\"number\"},\"path_begin\":{\"type\":\"number\"},\"path_end\":{\"type\":\"number\"},\"hole\":{\"type\":\"string\"},\"skew\":{\"type\":\"number\"},\"revolutions\":{\"type\":\"number\"}},\"required\":[\"id\"]}", tool_edit},
         {"link", "Link objects. The last id becomes the root.",
             "{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"ids\"]}", tool_link},
         {"unlink", "Unlink the linkset that contains this object.",
