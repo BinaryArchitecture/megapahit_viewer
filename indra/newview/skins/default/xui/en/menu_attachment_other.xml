@@ -10,6 +10,20 @@
          function="ShowAgentProfile"
          parameter="hit object" />
     </menu_item_call>
+    <menu_item_call
+     label="Copy UUID"
+     name="Copy UUID">
+        <menu_item_call.on_click
+         function="Object.CopyUUID" />
+    </menu_item_call>
+    <menu_item_call
+     label="Copy Linkset UUIDs"
+     name="Copy Linkset UUIDs">
+        <menu_item_call.on_click
+         function="Object.CopyLinksetUUIDs" />
+        <menu_item_call.on_visible
+         function="Object.VisibleCopyLinksetUUIDs" />
+    </menu_item_call>
    <menu_item_call
      enabled="false"
      label="Add Friend"
