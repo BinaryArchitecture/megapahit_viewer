@@ -2303,6 +2303,23 @@ void LLLiveLSLEditor::callbackLSLCompileFailed(const LLSD& compile_errors)
     closeIfNeeded();
 }
 
+void LLLiveLSLEditor::openInExternalEditorWhenReady()
+{
+    if (!mScriptEd)
+    {
+        return;
+    }
+    if (mAssetStatus == PREVIEW_ASSET_LOADED)
+    {
+        if (getIsModifiable())
+        {
+            mScriptEd->openInExternalEditor();
+        }
+        return;
+    }
+    mOpenExternalWhenLoaded = true;
+}
+
 void LLLiveLSLEditor::loadAsset()
 {
     //LL_INFOS() << "LLLiveLSLEditor::loadAsset()" << LL_ENDL;
@@ -2414,6 +2431,11 @@ void LLLiveLSLEditor::onLoadComplete(const LLUUID& asset_id,
             instance->mScriptEd->setEnableEditing(true);
             instance->mAssetStatus = PREVIEW_ASSET_LOADED;
             instance->mScriptEd->setAssetID(asset_id);
+            if (instance->mOpenExternalWhenLoaded && instance->getIsModifiable())
+            {
+                instance->mOpenExternalWhenLoaded = false;
+                instance->mScriptEd->openInExternalEditor();
+            }
         }
         else
         {
@@ -2430,6 +2452,7 @@ void LLLiveLSLEditor::onLoadComplete(const LLUUID& asset_id,
             {
                 LLNotificationsUtil::add("UnableToLoadScript");
             }
+            instance->mOpenExternalWhenLoaded = false;
             instance->mAssetStatus = PREVIEW_ASSET_ERROR;
         }
     }

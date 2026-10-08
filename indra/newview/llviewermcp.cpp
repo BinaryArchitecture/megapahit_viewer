@@ -25,6 +25,8 @@
 #include "llinventorymodel.h"
 #include "llnamevalue.h"
 #include "llpermissions.h"
+#include "llfloaterreg.h"
+#include "llpreviewscript.h"
 #include "llprimitive.h"
 #include "roles_constants.h"
 #include "llselectmgr.h"
@@ -1667,6 +1669,138 @@ namespace
         return true;
     }
 
+    bool open_object_script(LLViewerObject* prim, LLInventoryItem* item, std::string& error)
+    {
+        LLSD floater_key;
+        floater_key["taskid"] = prim->getID();
+        floater_key["itemid"] = item->getUUID();
+        LLLiveLSLEditor* preview = LLFloaterReg::showTypedInstance<LLLiveLSLEditor>("preview_scriptedit", floater_key, TAKE_FOCUS_YES);
+        if (!preview)
+        {
+            error = "could not open " + item->getName();
+            return false;
+        }
+        preview->setObjectID(prim->getID());
+        preview->openInExternalEditorWhenReady();
+        return true;
+    }
+
+    void tool_script_edit(const boost::json::object* args, boost::json::object& out, bool& is_error)
+    {
+        require_world(is_error, "script_edit");
+        LLViewerObject* prim = object_by_id(jstr(args, "id"), is_error);
+        if (!prim->permModify() && !gAgent.isGodlike())
+        {
+            is_error = true;
+            throw std::runtime_error("you cannot modify this object");
+        }
+
+        LLInventoryObject::object_list_t contents;
+        prim->getInventoryContents(contents);
+        std::vector<LLInventoryItem*> scripts;
+        for (const LLPointer<LLInventoryObject>& entry : contents)
+        {
+            LLInventoryItem* item = dynamic_cast<LLInventoryItem*>(entry.get());
+            if (item && item->getType() == LLAssetType::AT_LSL_TEXT)
+            {
+                scripts.push_back(item);
+            }
+        }
+        if (scripts.empty())
+        {
+            if (!prim->isInventoryPending())
+            {
+                prim->requestInventory();
+            }
+            is_error = true;
+            throw std::runtime_error("object contents are not loaded yet, or it has no scripts; call contents and retry");
+        }
+
+        const bool open_all = jbool(args, "all", false);
+        std::vector<std::string> wanted_names;
+        if (jhas(args, "name"))
+        {
+            wanted_names.push_back(jstr(args, "name"));
+        }
+        if (args)
+        {
+            auto names = args->find("names");
+            if (names != args->end() && names->value().is_array())
+            {
+                for (const boost::json::value& value : names->value().as_array())
+                {
+                    if (value.is_string())
+                    {
+                        wanted_names.push_back(std::string(value.as_string()));
+                    }
+                }
+            }
+        }
+        const LLUUID only_id(jstr(args, "item_id"));
+
+        std::vector<LLInventoryItem*> chosen;
+        if (open_all)
+        {
+            chosen = scripts;
+        }
+        else if (only_id.notNull())
+        {
+            for (LLInventoryItem* script : scripts)
+            {
+                if (script->getUUID() == only_id)
+                {
+                    chosen.push_back(script);
+                }
+            }
+            if (chosen.empty())
+            {
+                is_error = true;
+                throw std::runtime_error("that item is not a script in this object");
+            }
+        }
+        else if (!wanted_names.empty())
+        {
+            for (const std::string& wanted : wanted_names)
+            {
+                bool found = false;
+                for (LLInventoryItem* script : scripts)
+                {
+                    if (LLStringUtil::compareInsensitive(script->getName(), wanted) == 0)
+                    {
+                        chosen.push_back(script);
+                        found = true;
+                    }
+                }
+                if (!found)
+                {
+                    is_error = true;
+                    throw std::runtime_error("no script named " + wanted);
+                }
+            }
+        }
+        else
+        {
+            is_error = true;
+            throw std::runtime_error("pass item_id, name, names, or all true");
+        }
+
+        boost::json::array opened;
+        for (LLInventoryItem* script : chosen)
+        {
+            std::string error;
+            if (!open_object_script(prim, script, error))
+            {
+                is_error = true;
+                throw std::runtime_error(error);
+            }
+            boost::json::object row;
+            row["item_id"] = script->getUUID().asString();
+            row["name"] = script->getName();
+            opened.push_back(std::move(row));
+        }
+        out["opened"] = std::move(opened);
+    }
+
     void tool_script_read(const boost::json::object* args, boost::json::object& out, bool& is_error)
     {
         require_world(is_error, "script_read");
@@ -1825,6 +1959,8 @@ namespace
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}", tool_contents},
         {"script_create", "Create a new LSL or Lua script inside an object. Poll script_job for the item id.",
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"language\":{\"type\":\"string\"}},\"required\":[\"id\"]}", tool_script_create},
+        {"script_edit", "Open object scripts in the external editor, the same as the Edit button. Pass item_id, name, names, or all true.",
+            "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"item_id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"names\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"all\":{\"type\":\"boolean\"}},\"required\":[\"id\"]}", tool_script_edit},
         {"script_read", "Read a script's source. Pass an object id plus item_id, or an inventory item_id or name. If the text is not cached yet, poll script_job.",
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"item_id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}}}", tool_script_read},
         {"script_save", "Upload script source into an object inventory item and compile it. vm is mono, luau, or lsl-luau. Poll script_job.",
