@@ -156,6 +156,8 @@ void SpeakingIndicatorManager::registerSpeakingIndicator(const LLUUID& speaker_i
 
     speaking_indicator->setTargetSessionID(session_id);
 
+    mSpeakingIndicators.erase(speaker_id);
+
     speaking_indicator_value_t value_type(speaker_id, speaking_indicator);
     mSpeakingIndicators.insert(value_type);
 
@@ -266,7 +268,7 @@ void SpeakingIndicatorManager::switchSpeakerIndicators(const speaker_ids_t& spea
             }
             was_switched_on = was_switched_on || switch_on;
 
-            indicator->switchIndicator(switch_on);
+            if (indicator) indicator->switchIndicator(switch_on);
         }
 
         if (was_found)
@@ -297,7 +299,7 @@ void SpeakingIndicatorManager::ensureInstanceDoesNotExist(LLSpeakingIndicator* c
     {
         if (it->second == speaking_indicator)
         {
-            LL_WARNS() << "The same instance of indicator has already been registered, removing it: " << it->first << "|"<< speaking_indicator << LL_ENDL;
+            LL_WARNS() << "Duplicate instance, removing: " << it->first << " | " << speaking_indicator << LL_ENDL;
             it = mSpeakingIndicators.erase(it);
         }
         else
