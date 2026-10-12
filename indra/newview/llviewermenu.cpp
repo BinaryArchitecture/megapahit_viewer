@@ -3483,6 +3483,76 @@ static void handle_object_copy_linkset_uuids()
     copy_text_to_clipboard(text);
 }
 
+static void append_unique_selected_object(std::vector<LLViewerObject*>& objects, LLViewerObject* object)
+{
+    if (!object || object->isAvatar())
+    {
+        return;
+    }
+    for (LLViewerObject* existing : objects)
+    {
+        if (existing == object)
+        {
+            return;
+        }
+    }
+    objects.push_back(object);
+}
+
+// Family roots cover shift-selected objects. Individual nodes cover
+// Edit Linked Parts, where each prim is selected on its own.
+static void collect_multi_selected_objects(std::vector<LLViewerObject*>& objects)
+{
+    objects.clear();
+    LLObjectSelectionHandle selection = LLSelectMgr::getInstance()->getSelection();
+    if (!selection)
+    {
+        return;
+    }
+
+    for (LLObjectSelection::root_iterator it = selection->root_begin(); it != selection->root_end(); ++it)
+    {
+        append_unique_selected_object(objects, (*it)->getObject());
+    }
+    for (LLObjectSelection::iterator it = selection->begin(); it != selection->end(); ++it)
+    {
+        LLSelectNode* node = *it;
+        if (!node || !node->mIndividualSelection)
+        {
+            continue;
+        }
+        append_unique_selected_object(objects, node->getObject());
+    }
+}
+
+static bool selection_has_multiple_objects()
+{
+    std::vector<LLViewerObject*> objects;
+    collect_multi_selected_objects(objects);
+    return objects.size() > 1;
+}
+
+static void handle_object_copy_selected_uuids()
+{
+    std::vector<LLViewerObject*> objects;
+    collect_multi_selected_objects(objects);
+    if (objects.size() < 2)
+    {
+        return;
+    }
+
+    std::string text;
+    for (LLViewerObject* object : objects)
+    {
+        if (!text.empty())
+        {
+            text += ", ";
+        }
+        text += object->getID().asString();
+    }
+    copy_text_to_clipboard(text);
+}
+
 static void handle_avatar_copy_uuid()
 {
     LLUUID id = gAgent.getID();
@@ -10665,6 +10735,8 @@ void initialize_menus()
     commit.add("Object.CopyUUID", boost::bind(&handle_object_copy_uuid));
     commit.add("Object.CopyLinksetUUIDs", boost::bind(&handle_object_copy_linkset_uuids));
     enable.add("Object.VisibleCopyLinksetUUIDs", boost::bind(&object_is_linkset));
+    commit.add("Object.CopySelectedUUIDs", boost::bind(&handle_object_copy_selected_uuids));
+    enable.add("Object.VisibleCopySelectedUUIDs", boost::bind(&selection_has_multiple_objects));
     commit.add("Avatar.CopyUUID", boost::bind(&handle_avatar_copy_uuid));
     commit.add("Object.Open", boost::bind(&handle_object_open));
     commit.add("Object.Take", boost::bind(&handle_take, false));
