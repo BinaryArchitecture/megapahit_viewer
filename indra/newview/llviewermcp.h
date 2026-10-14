@@ -22,6 +22,12 @@ public:
                          const std::string& from,
                          const LLUUID& from_id,
                          const std::string& text);
+
+    // Record a script debug-channel line. These open the script debug tab
+    // and are not nearby chat. Main thread only.
+    static void noteDebug(const std::string& from,
+                          const LLUUID& from_id,
+                          const std::string& text);
 };
 
 #endif
