@@ -36,10 +36,6 @@
      name="buycurrencylabel">
         L$ [AMT]
     </panel.string>
-	<panel.string
-     name="buycurrencylabel_usd">
-        L$ [AMT] / $USD [USD]
-    </panel.string>
   <panel
 	 height="18"
 	 left="-398"
